@@ -1,0 +1,15 @@
+## 🛠 Hướng dẫn cài đặt
+1. **Clone dự án:** `git clone [link_]`
+2. **Tạo môi trường ảo:** `python -m venv venv`
+3. **Kích hoạt venv:** - Windows: `.\venv\Scripts\activate`
+   - Mac/Linux: `source venv/bin/activate`
+4. **Cài đặt thư viện:** `pip install -r requirements.txt`
+
+## 🔑 Cấu hình hệ thống
+- Tạo file `.env` tại thư mục gốc.
+- Thêm dòng: `GOOGLE_API_KEY=key lay o ggstudio)`
+
+## 🚀 Cách khởi chạy
+1. **Nạp dữ liệu:** Copy PDF vào thư mục `/data`, sau đó chạy: `python ingest_data.py`
+2. **Chạy server:** `python -m uvicorn app.main:app --reload`
+3. **Truy cập:** `http://127.0.0.1:8000/docs` để bắt đầu hỏi đáp
