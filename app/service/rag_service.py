@@ -42,6 +42,12 @@ class RAGService:
                 try:
                     loader = PyPDFLoader(file_path)
                     docs = loader.load()
+                    # Cập nhật metadata: Thêm source file và đảm bảo có page number
+                    for doc in docs:
+                        doc.metadata["source"] = filename
+                        # PyPDFLoader tự động thêm 'page', ta có thể giữ nguyên hoặc map sang 'page_number' nếu cần thiết
+                        # print(f"Debug Metadata: {doc.metadata}") 
+                    
                     documents.extend(docs)
                     print(f"✅ Đã đọc: {filename}")
                 except Exception as e:
@@ -60,6 +66,12 @@ class RAGService:
         splits = text_splitter.split_documents(documents)
         total_chunks = len(splits)
         print(f"📦 Tổng cộng: {total_chunks} đoạn văn bản.")
+        
+        # Kiểm tra Metadata (Logging)
+        print("--- Metadata Check (3 đoạn đầu tiên) ---")
+        for i, chunk in enumerate(splits[:3]):
+            print(f"Chunk {i+1} Metadata: {chunk.metadata}")
+
 
 # 3. Nạp vào Vector DB theo chế độ "An Toàn Tuyệt Đối"
         batch_size = 1 
