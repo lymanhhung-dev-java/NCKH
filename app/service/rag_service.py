@@ -61,7 +61,7 @@ class RAGService:
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000, 
             chunk_overlap=200,
-            separators=["\n\n", "\n", ".", " ", ""]
+            separators=["\n\n", "\n", " ", ""]
         )
         splits = text_splitter.split_documents(documents)
         total_chunks = len(splits)
