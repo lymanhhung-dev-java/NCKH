@@ -1,14 +1,16 @@
 import os
 import time
+import hashlib
+import json
 from typing import List
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_chroma import Chroma
 from langchain.chains.retrieval import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 from app.core.config import settings
+from app.service.embedding_service import ChunkingPresets
 
 class RAGService:
     def __init__(self):
@@ -27,53 +29,137 @@ class RAGService:
             persist_directory=settings.DATABASE_DIR,
             embedding_function=self.embeddings
         )
+        
+        # Khởi tạo ChunkingService (tách bạch trách nhiệm)
+        # Có thể sử dụng preset: ChunkingPresets.vietnamese_optimized() (mặc định)
+        self.chunking_service = ChunkingPresets.vietnamese_optimized()
+        
+        # File ghi nhật ký những tài liệu đã nạp
+        self.ingestion_log_file = "./database/ingestion_log.json"
+        self._ensure_log_file_exists()
+    
+    def _ensure_log_file_exists(self):
+        """Đảm bảo file log tồn tại"""
+        log_dir = os.path.dirname(self.ingestion_log_file)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+        if not os.path.exists(self.ingestion_log_file):
+            with open(self.ingestion_log_file, 'w', encoding='utf-8') as f:
+                json.dump({}, f)
+    
+    def _calculate_file_hash(self, file_path: str) -> str:
+        """Tính hash của file để kiểm tra trùng lặp"""
+        sha256_hash = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+    
+    def _load_ingestion_log(self) -> dict:
+        """Tải danh sách những file đã nạp"""
+        try:
+            with open(self.ingestion_log_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
+    
+    def _save_ingestion_log(self, log_data: dict):
+        """Lưu danh sách những file đã nạp"""
+        with open(self.ingestion_log_file, 'w', encoding='utf-8') as f:
+            json.dump(log_data, f, ensure_ascii=False, indent=2)
+    
+    def _is_document_already_ingested(self, file_path: str) -> bool:
+        """Kiểm tra xem document đã được nạp chưa"""
+        file_hash = self._calculate_file_hash(file_path)
+        log_data = self._load_ingestion_log()
+        return file_hash in log_data
+    
+    def _mark_document_as_ingested(self, file_path: str):
+        """Đánh dấu document đã được nạp"""
+        file_hash = self._calculate_file_hash(file_path)
+        log_data = self._load_ingestion_log()
+        
+        filename = os.path.basename(file_path)
+        log_data[file_hash] = {
+            'filename': filename,
+            'file_path': file_path,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'chunk_size': self.chunking_service.chunk_size,
+            'chunk_overlap': self.chunking_service.chunk_overlap,
+            'chunk_overlap_percent': f"{self.chunking_service.chunk_overlap_percent*100:.0f}%"
+        }
+        
+        self._save_ingestion_log(log_data)
 
     def ingest_documents(self, directory_path: str):
-        """Nhiệm vụ Tuần 2 & 3: Xử lý PDF và Đẩy vào Vector DB (Đã fix lỗi 429)"""
+        """
+        Nạp PDF vào Vector Database với xử lý trùng lặp
+        
+        Cấu hình tối ưu (từ test results):
+        - chunk_size: 1000 ký tự (mức trung bình tối ưu)
+        - chunk_overlap: 180 ký tự (18% - giữ ngữ cảnh Điều/Khoản)
+        - separators: ["\n\n", "\n", ". ", " ", ""] (ưu tiên đoạn → dòng → câu → từ)
+        """
         documents = []
+        skipped_files = 0
+        
         if not os.path.exists(directory_path):
             print(f"❌ Lỗi: Thư mục {directory_path} không tồn tại.")
             return
 
-        # 1. Nạp file PDF
+        print("📥 Kiểm tra tài liệu trùng lặp...")
+        
+        # 1. Nạp file PDF (với kiểm tra trùng lặp)
         for filename in os.listdir(directory_path):
             if filename.endswith(".pdf"):
                 file_path = os.path.join(directory_path, filename)
+                
+                # Kiểm tra xem document đã được nạp chưa
+                if self._is_document_already_ingested(file_path):
+                    print(f"⏭️  Bỏ qua: {filename} (đã nạp rồi)")
+                    skipped_files += 1
+                    continue
+                
                 try:
                     loader = PyPDFLoader(file_path)
                     docs = loader.load()
-                    # Cập nhật metadata: Thêm source file và đảm bảo có page number
+                    
+                    # Cập nhật metadata
                     for doc in docs:
                         doc.metadata["source"] = filename
-                        # PyPDFLoader tự động thêm 'page', ta có thể giữ nguyên hoặc map sang 'page_number' nếu cần thiết
-                        # print(f"Debug Metadata: {doc.metadata}") 
                     
                     documents.extend(docs)
+                    
+                    # Đánh dấu file đã nạp
+                    self._mark_document_as_ingested(file_path)
                     print(f"✅ Đã đọc: {filename}")
+                    
                 except Exception as e:
                     print(f"❌ Lỗi file {filename}: {e}")
+        
+        if skipped_files > 0:
+            print(f"\n📊 Tómlại: Bỏ qua {skipped_files} file đã nạp trước đó")
 
         if not documents:
-            print("❌ Không tìm thấy tài liệu nào.")
+            if skipped_files > 0:
+                print("💡 Tất cả file đã được nạp rồi. Không có gì mới để xử lý.")
+            else:
+                print("❌ Không tìm thấy tài liệu nào.")
             return
 
-        # 2. Chunking khoa học
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000, 
-            chunk_overlap=200,
-            separators=["\n\n", "\n", " ", ""]
-        )
-        splits = text_splitter.split_documents(documents)
+        # 2. Chunking khoa học (sử dụng ChunkingService)
+        print(f"\n✂️  Đang cắt nhỏ văn bản...")
+        splits = self.chunking_service.split_documents(documents)
         total_chunks = len(splits)
-        print(f"📦 Tổng cộng: {total_chunks} đoạn văn bản.")
         
-        # Kiểm tra Metadata (Logging)
-        print("--- Metadata Check (3 đoạn đầu tiên) ---")
-        for i, chunk in enumerate(splits[:3]):
-            print(f"Chunk {i+1} Metadata: {chunk.metadata}")
+        print(f"\n📦 Tổng cộng: {total_chunks} đoạn văn bản.")
+        print(f"⚙️  Cấu hình Chunking:")
+        print(f"   - chunk_size: {self.chunking_service.chunk_size} ký tự")
+        print(f"   - chunk_overlap: {self.chunking_service.chunk_overlap} ký tự ({self.chunking_service.chunk_overlap_percent*100:.0f}%) - TỐI ƯU")
+        print(f"   - separators: {self.chunking_service.separators}")
+        print(f"   - Mục đích: Giữ ngữ cảnh Điều/Khoản không bị cắt quãng")
 
-
-# 3. Nạp vào Vector DB theo chế độ "An Toàn Tuyệt Đối"
+        # 3. Nạp vào Vector DB theo chế độ "An Toàn Tuyệt Đối"
         batch_size = 1 
         print(f"🚀 Đang nạp từng bước (Cực chậm) để tránh bị chặn...")
         
