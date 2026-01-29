@@ -1,17 +1,12 @@
-from app.service.pdf_service import PDFProcessor
+from app.service.rag_service import rag_service
 import os
 
 if __name__ == "__main__":
     data_path = "./data" 
-    print("--- ĐANG KIỂM TRA HỆ THỐNG ĐỌC FILE ---")
+    print("--- ĐANG KIỂM TRA HỆ THỐNG ĐỌC FILE VÀ LƯU VÀO CHROMADB ---")
     
-    # Khởi tạo bộ quét file
-    processor = PDFProcessor(data_folder=data_path)
+    # Chạy quét và nạp dữ liệu vào ChromaDB
+    # Hàm này đã bao gồm logic: đọc PDF -> check trùng -> chunking -> vector store
+    rag_service.ingest_documents(directory_path=data_path)
     
-    # Chạy quét và lấy dữ liệu
-    documents = processor.process_all_pdfs() 
-    
-    if documents:
-        print(f"✅ THÀNH CÔNG: Đã đọc được {len(documents)} trang từ các file PDF.")
-    else:
-        print("❌ THẤT BẠI: Không có dữ liệu nào được trích xuất.")
+    print("\n--- HOÀN TẤT QUÁ TRÌNH ---")
