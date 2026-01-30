@@ -2,7 +2,7 @@
   "23423281754131740ba62dbdf3426af80d29819c43ab40f5ad38f2186071383d": {
     "filename": "7 TB-SĐH_0001.pdf",
     "file_path": "./data\\7 TB-SĐH_0001.pdf",
-    "timestamp": "2026-01-30 06:41:24",
+    "timestamp": "2026-01-30 08:30:48",
     "chunk_size": 1000,
     "chunk_overlap": 180,
     "chunk_overlap_percent": "18%"
@@ -10,7 +10,7 @@
   "433863082e29bc184b60d163d06f3ba8e3981bdd67b4b17384ac414842fb3e0b": {
     "filename": "Công khai mức thu HP_0001.pdf",
     "file_path": "./data\\Công khai mức thu HP_0001.pdf",
-    "timestamp": "2026-01-30 06:41:24",
+    "timestamp": "2026-01-30 08:30:48",
     "chunk_size": 1000,
     "chunk_overlap": 180,
     "chunk_overlap_percent": "18%"
@@ -18,7 +18,7 @@
   "bfe5ef11da324c707ebdaddc3c611ec43b7199cef5e3c63934f9bff67a7a9973": {
     "filename": "sample.pdf",
     "file_path": "./data\\sample.pdf",
-    "timestamp": "2026-01-30 06:41:24",
+    "timestamp": "2026-01-30 08:30:48",
     "chunk_size": 1000,
     "chunk_overlap": 180,
     "chunk_overlap_percent": "18%"

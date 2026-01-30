@@ -196,6 +196,20 @@ class RAGService:
         rag_chain = create_retrieval_chain(retriever, question_answer_chain)
 
         response = rag_chain.invoke({"input": question})
-        return response["answer"]
+        
+        # Process sources
+        sources = []
+        if "context" in response:
+            for doc in response["context"]:
+                sources.append({
+                    "filename": doc.metadata.get("source", "Unknown"),
+                    "page": doc.metadata.get("page", None),
+                    "content": doc.page_content[:200] + "..." # Preview content
+                })
+                
+        return {
+            "answer": response["answer"],
+            "sources": sources
+        }
 
 rag_service = RAGService()
