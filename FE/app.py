@@ -6,7 +6,7 @@ BACKEND_URL = "http://localhost:8000/api/v1"
 
 # Cấu hình trang Streamlit
 st.set_page_config(
-    page_title="Hệ thống Hỏi đáp ",
+    page_title="HAU Assistant ",
     page_icon="💬",
     layout="wide"
 )
@@ -21,7 +21,7 @@ def init_session_state():
 
 def render_user_interface():
     """Giao diện dành cho Người dùng: Chỉ có chức năng Chat"""
-    st.title("💬 Trợ lý Hỏi đáp Tài liệu (RAG)")
+    st.title("💬 HAU Assistant ")
     
     # Chỉ hiển thị nút xóa lịch sử chat ở sidebar khi đang ở chế độ User
     with st.sidebar:
@@ -149,6 +149,33 @@ def render_admin_interface():
                 )
                 if response.status_code == 200:
                     st.success("✅ Nạp dữ liệu thành công! (Tiến trình đang chạy ngầm trên server)")
+                else:
+                    st.error(f"❌ Lỗi từ server: HTTP {response.status_code}")
+            except requests.exceptions.RequestException as e:
+                st.error("❌ Không thể kết nối đến Backend. Vui lòng kiểm tra lại server FastAPI!")
+
+    st.divider()
+    st.subheader("🌐 Đồng bộ dữ liệu Website")
+    st.markdown("Chức năng này gọi API để cào dữ liệu từ Website và cập nhật vào Vector Database.")
+    
+    start_url = st.text_input(
+        "Đường dẫn Bắt đầu (Trang chủ):", 
+        value="https://hau.edu.vn/",
+        help="Ví dụ: https://hau.edu.vn/"
+    )
+    
+    if st.button("🔄 Bắt đầu Đồng bộ Website", type="primary"):
+        with st.spinner("Đang gửi yêu cầu đến server..."):
+            try:
+                response = requests.post(
+                    f"{BACKEND_URL}/ingest/web",
+                    json={"start_url": start_url},
+                    timeout=10
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    msg = data.get("message", "Tiến trình đồng bộ Website đã được kích hoạt chạy ngầm...")
+                    st.success(f"✅ {msg}")
                 else:
                     st.error(f"❌ Lỗi từ server: HTTP {response.status_code}")
             except requests.exceptions.RequestException as e:

@@ -3,7 +3,9 @@ import time
 import hashlib
 import json
 from typing import List
+from bs4 import BeautifulSoup
 from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders.recursive_url_loader import RecursiveUrlLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_chroma import Chroma
 from langchain_classic.chains.retrieval import create_retrieval_chain
@@ -65,6 +67,10 @@ class RAGService:
         # File ghi nhật ký những tài liệu đã nạp
         self.ingestion_log_file = "./database/ingestion_log.json"
         self._ensure_log_file_exists()
+        
+        # File ghi nhật ký những URL đã nạp từ Website
+        self.web_ingestion_log_file = "./database/web_ingestion_log.json"
+        self._ensure_web_log_file_exists()
     
     def _ensure_log_file_exists(self):
         """Đảm bảo file log tồn tại"""
@@ -74,6 +80,28 @@ class RAGService:
         if not os.path.exists(self.ingestion_log_file):
             with open(self.ingestion_log_file, 'w', encoding='utf-8') as f:
                 json.dump({}, f)
+                
+    def _ensure_web_log_file_exists(self):
+        """Đảm bảo file log web tồn tại"""
+        log_dir = os.path.dirname(self.web_ingestion_log_file)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+        if not os.path.exists(self.web_ingestion_log_file):
+            with open(self.web_ingestion_log_file, 'w', encoding='utf-8') as f:
+                json.dump({}, f)
+                
+    def _load_web_ingestion_log(self) -> dict:
+        """Tải danh sách những URL đã nạp"""
+        try:
+            with open(self.web_ingestion_log_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
+            
+    def _save_web_ingestion_log(self, log_data: dict):
+        """Lưu danh sách những URL đã nạp"""
+        with open(self.web_ingestion_log_file, 'w', encoding='utf-8') as f:
+            json.dump(log_data, f, ensure_ascii=False, indent=2)
     
     def _calculate_file_hash(self, file_path: str) -> str:
         """Tính hash của file để kiểm tra trùng lặp"""
@@ -201,6 +229,137 @@ class RAGService:
                 print(f"⚠️ Đang đợi 60 giây do Google quá tải: {e}")
                 time.sleep(60)
                 self.vector_store.add_documents(documents=batch)
+
+    def _clean_html_content(self, page_content: str) -> str:
+        """Lọc bỏ các thẻ rác khỏi nội dung web"""
+        # Sử dụng trình phân tích cú pháp html.parser hoặc lxml
+        soup = BeautifulSoup(page_content, "html.parser") 
+        
+        # Xóa các thẻ không chứa nội dung chính yếu
+        for tag in soup(["header", "footer", "nav", "script", "style", "aside"]):
+            tag.decompose()
+            
+        # Trích xuất văn bản và loại bỏ khoảng trắng thừa
+        text = soup.get_text(separator="\n", strip=True)
+        return text
+
+    def sync_website_data(self, start_url: str = "https://hau.edu.vn/"):
+        """
+        Thu thập và cập nhật dữ liệu từ website bằng Nhện web.
+        Cơ chế Upsert: 
+        - Nếu URL chưa có -> Thêm mới (Insert). 
+        - Nếu có nhưng đổi nội dung -> Cập nhật (Upsert). 
+        - Không đổi -> Bỏ qua.
+        """
+        print(f"\n🌐 Đang bắt đầu quá trình đồng bộ web từ URL: {start_url}")
+        start_time = time.time() # Bắt đầu bấm giờ
+        
+        try:
+            # Giả lập User-Agent của Chrome Windows để chống bị chặn (Block/Timeout)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            
+            loader = RecursiveUrlLoader(
+                url=start_url,
+                max_depth=2,
+                extractor=self._clean_html_content,
+                prevent_outside=True,
+                timeout=30,
+                headers=headers
+            )
+            
+            web_log = self._load_web_ingestion_log()
+            docs_to_insert = []
+            updated_count = 0
+            inserted_count = 0
+            skipped_count = 0
+            
+            print(f"🕵️  Bắt đầu quét các trang từ {start_url} ...")
+            
+            # Sử dụng lazy_load để xử lý và log từng trang ngay lập tức
+            for doc in loader.lazy_load():
+                url = doc.metadata.get("source", "")
+                print(f"⏳ Đang xử lý: {url}")
+                
+                content = doc.page_content
+                
+                # Tính mã băm nội dung để so sánh
+                content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+                
+                if url in web_log:
+                    if web_log[url]['hash'] == content_hash:
+                        skipped_count += 1
+                        continue # Bỏ qua vì không đổi
+                    else:
+                        print(f"  🔄 Nội dung thay đổi, cập nhật: {url}")
+                        # Xóa chunk cũ dựa trên source URL
+                        try:
+                            self.vector_store._collection.delete(where={"source": url})
+                        except Exception as e:
+                            print(f"  ⚠️ Lỗi xóa dữ liệu cũ (URL={url}): {e}")
+                        
+                        docs_to_insert.append(doc)
+                        updated_count += 1
+                        web_log[url] = {
+                            "hash": content_hash,
+                            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        # Lưu log ngay sau khi xử lý xong trang để tránh mất data nếu crash giữa chừng
+                        self._save_web_ingestion_log(web_log)
+                else:
+                    print(f"  🆕 Phát hiện bài viết mới: {url}")
+                    docs_to_insert.append(doc)
+                    inserted_count += 1
+                    web_log[url] = {
+                        "hash": content_hash,
+                        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    self._save_web_ingestion_log(web_log)
+            
+            # Tiến hành chunking và insert nếu có tài liệu mới/cần cập nhật
+            if docs_to_insert:
+                print(f"\n✂️  Đang cắt {len(docs_to_insert)} bài viết mới/cập nhật...")
+                splits = self.chunking_service.split_documents(docs_to_insert)
+                total_chunks = len(splits)
+                
+                print(f"🚀 Bắt đầu nạp {total_chunks} đoạn văn bản web vào DB...")
+                batch_size = 1 # Nạp từng chunk một cho an toàn
+                max_retries = 3
+                for i in range(0, total_chunks, batch_size):
+                    batch = splits[i:i + batch_size]
+                    retries = 0
+                    success = False
+                    
+                    while retries < max_retries and not success:
+                        try:
+                            self.vector_store.add_documents(documents=batch)
+                            success = True
+                            time.sleep(2) # 1. Hãm phanh chủ động: ngủ 2 giây
+                        except Exception as e:
+                            error_msg = str(e)
+                            # 2. Cơ chế thử lại (Retry) khi có lỗi
+                            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                                retries += 1
+                                print(f"⚠️ Cảnh báo giới hạn API (429/RESOURCE_EXHAUSTED). Hệ thống ngủ 60s (Lần thử {retries}/{max_retries})...")
+                                time.sleep(60)
+                            else:
+                                print(f"❌ Lỗi nạp dữ liệu: {e}. Thoát và tiếp tục bài viết tiếp theo.")
+                                break # Lỗi khác 429, thoát vòng lặp while để sang chunk mới
+                                
+                    if not success and retries >= max_retries:
+                        print(f"🚫 Cảnh báo: Bỏ qua URL/đoạn văn bản này sau {max_retries} lần thử thất bại để không kẹt tiến trình.")
+            
+            # Tính toán thời gian tổng cộng
+            end_time = time.time()
+            elapsed_seconds = end_time - start_time
+            minutes, seconds = divmod(elapsed_seconds, 60)
+            
+            print(f"\n✅ Hoàn tất đồng bộ web trong {int(minutes)} phút {int(seconds)} giây!")
+            print(f"📊 Thống kê: Thêm mới: {inserted_count}, Cập nhật: {updated_count}, Bỏ qua: {skipped_count}.")
+                
+        except Exception as e:
+            print(f"❌ Lỗi nghiêm trọng trong quá trình đồng bộ website: {e}")
 
     def ask_question(self, question: str) -> str:
         """Nhiệm vụ Tuần 4: Truy vấn thông minh"""
