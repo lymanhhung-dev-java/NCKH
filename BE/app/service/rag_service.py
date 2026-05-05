@@ -6,8 +6,8 @@ from typing import List
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_chroma import Chroma
-from langchain.chains.retrieval import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_classic.chains.retrieval import create_retrieval_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 from app.core.config import settings
 from app.service.embedding_service import ChunkingPresets
@@ -16,11 +16,11 @@ class RAGService:
     def __init__(self):
         # Khởi tạo AI và Embeddings
         self.embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
+            model="models/gemini-embedding-001",
             google_api_key=settings.GOOGLE_API_KEY
         )
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash", 
+            model = "gemini-3-flash-preview", 
             google_api_key=settings.GOOGLE_API_KEY, 
             temperature=0.3
         )
@@ -30,6 +30,34 @@ class RAGService:
             embedding_function=self.embeddings
         )
         
+        # Khởi tạo các thành phần RAG (Retriever, Prompt, Chain)
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
+        
+        self.system_prompt = (
+           "Bạn là HAU Assistant - Trợ lý ảo thông minh được phát triển bởi nhóm NCKH của Trường Đại học Kiến trúc Hà Nội. "
+            "Nhiệm vụ của bạn là hỗ trợ giải đáp thắc mắc cho sinh viên, tân sinh viên và thí sinh về các vấn đề: "
+            "Tuyển sinh, Quy chế đào tạo, Học phí, và Thủ tục hành chính.\n\n"
+            
+            "CÁC QUY TẮC BẮT BUỘC:\n"
+            "1. Tính chính xác: Chỉ sử dụng thông tin từ bộ dữ liệu nội bộ được cung cấp. Tuyệt đối không sử dụng kiến thức bên ngoài hoặc tự ý dự đoán thông tin.\n"
+            "2. Trích dẫn nguồn: Không cần bạn tự trích dẫn, hệ thống sẽ tự động ghép nguồn ở dưới. Bạn chỉ cần tập trung trả lời.\n"
+            "3. Xử lý khi thiếu thông tin: Nếu dữ liệu không có câu trả lời, hãy phản hồi: 'Rất tiếc, HAU Assistant chưa tìm thấy thông tin chính thống về vấn đề này trong hệ thống. Bạn vui lòng liên hệ trực tiếp Phòng Đào tạo (Tầng 3 – Nhà M) hoặc Hotline của nhà trường +84.4.3854.4346 để được hỗ trợ chính xác nhất.'\n"
+            "4. Phong cách ngôn ngữ: Xưng hô 'HAU Assistant' và 'Bạn'. Thái độ Chuyên nghiệp, lịch sự, thân thiện, hỗ trợ và hiện đại.\n"
+            "5. Định dạng: Sử dụng gạch đầu dòng (bullet points) cho các quy trình hoặc danh sách để người dùng dễ đọc.\n"
+            "6. Giới hạn: Từ chối trả lời các câu hỏi không liên quan đến Trường Đại học Kiến trúc Hà Nội hoặc vi phạm thuần phong mỹ tục.\n\n"
+            
+            "Dữ liệu nội bộ được cung cấp dưới đây:\n"
+            "{context}"
+        )
+
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            ("human", "{input}"),
+        ])
+
+        self.question_answer_chain = create_stuff_documents_chain(self.llm, self.prompt)
+        self.rag_chain = create_retrieval_chain(self.retriever, self.question_answer_chain)
+
         # Khởi tạo ChunkingService (tách bạch trách nhiệm)
         # Có thể sử dụng preset: ChunkingPresets.vietnamese_optimized() (mặc định)
         self.chunking_service = ChunkingPresets.vietnamese_optimized()
@@ -176,26 +204,8 @@ class RAGService:
 
     def ask_question(self, question: str) -> str:
         """Nhiệm vụ Tuần 4: Truy vấn thông minh"""
-        retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
-        
-        system_prompt = (
-            "Bạn là trợ lý ảo hỗ trợ sinh viên dựa trên tài liệu nội bộ của nhà trường. "
-            "Chỉ sử dụng các đoạn văn bản dưới đây để trả lời câu hỏi. "
-            "Nếu thông tin không có trong tài liệu, hãy nói 'Tôi không biết'. "
-            "Câu trả lời cần ngắn gọn, chính xác và lịch sự."
-            "\n\n"
-            "{context}"
-        )
-
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("human", "{input}"),
-        ])
-
-        question_answer_chain = create_stuff_documents_chain(self.llm, prompt)
-        rag_chain = create_retrieval_chain(retriever, question_answer_chain)
-
-        response = rag_chain.invoke({"input": question})
+        # Sử dụng rag_chain đã được khởi tạo trong __init__
+        response = self.rag_chain.invoke({"input": question})
         
         # Process sources
         sources = []
